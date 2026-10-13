@@ -20,7 +20,7 @@ normal agent-shell buffer the user can watch and take over.
 Clone, then symlink the skill into your skills directory:
 
 ```sh
-git clone https://github.com/<you>/agent-shell-skill ~/github/agent-shell-skill
+git clone https://github.com/izeigerman/agent-shell-skill ~/github/agent-shell-skill
 ln -s ~/github/agent-shell-skill/skills/agent-shell ~/.claude/skills/agent-shell
 ```
 

@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+# Drive agent-shell sessions inside a running Emacs via emacsclient.
+# See SKILL.md for usage.
+
+set -euo pipefail
+
+# Resolve through symlinks so the script still finds its lib when linked
+# onto PATH (e.g. ~/.local/bin/agent-shell-ctl -> .../skills/agent-shell/bin/...).
+self="${BASH_SOURCE[0]}"
+while [ -L "$self" ]; do
+  self_dir="$(cd -P -- "$(dirname -- "$self")" && pwd)"
+  self="$(readlink -- "$self")"
+  case $self in /*) ;; *) self="$self_dir/$self";; esac
+done
+SCRIPT_DIR="$(cd -P -- "$(dirname -- "$self")" && pwd)"
+LIB="$SCRIPT_DIR/../lib/agent-shell-ctl.el"
+[ -f "$LIB" ] || { printf 'agent-shell-ctl: cannot find %s\n' "$LIB" >&2; exit 1; }
+EMACSCLIENT="${EMACSCLIENT:-emacsclient}"
+
+die() { printf 'agent-shell-ctl: %s\n' "$*" >&2; exit 1; }
+
+# Quote a bash value as an Emacs Lisp string literal.
+elstr() {
+  local s=${1//\\/\\\\}
+  printf '"%s"' "${s//\"/\\\"}"
+}
+
+# Call into Emacs with already-quoted elisp arguments. The elisp side
+# writes its output to a temp file, so we never have to unescape an
+# `emacsclient --eval' printed representation.
+ash_raw() {
+  local out err rc form
+  out=$(mktemp "${TMPDIR:-/tmp}/agent-shell-ctl.XXXXXX")
+  err=$(mktemp "${TMPDIR:-/tmp}/agent-shell-ctl-err.XXXXXX")
+  form="(progn (load $(elstr "$LIB") nil t) (agent-shell-ctl-run $(elstr "$out") $*))"
+  if ! rc=$("$EMACSCLIENT" --eval "$form" 2>"$err"); then
+    cat "$err" >&2
+    rm -f "$out" "$err"
+    die "emacsclient failed; is Emacs running with a server and agent-shell loaded?"
+  fi
+  rm -f "$err"
+  if [ "$rc" != "0" ]; then
+    cat "$out" >&2; echo >&2
+    rm -f "$out"
+    exit 1
+  fi
+  cat "$out"
+  if [ -s "$out" ] && [ "$(tail -c1 "$out" | wc -l)" -eq 0 ]; then echo; fi
+  rm -f "$out"
+}
+
+# Same, quoting each argument as an elisp string.
+ash() {
+  local args=() a
+  for a in "$@"; do args+=("$(elstr "$a")"); done
+  ash_raw "${args[*]-}"
+}
+
+repo_root() {
+  git -C "${1:-.}" rev-parse --show-toplevel 2>/dev/null || die "not a git repository: ${1:-.}"
+}
+
+# Materialize --prompt / --prompt-file into a file. Going through a file
+# keeps multi-line prompts out of both shell and elisp quoting.
+prompt_file_from() {
+  local text=$1 file=$2 tmp
+  if [ -n "$file" ]; then
+    [ -f "$file" ] || die "no such prompt file: $file"
+    printf '%s' "$file"
+    return
+  fi
+  [ -n "$text" ] || die "missing --prompt or --prompt-file"
+  tmp=$(mktemp "${TMPDIR:-/tmp}/agent-shell-prompt.XXXXXX")
+  printf '%s' "$text" > "$tmp"
+  printf '%s' "$tmp"
+}
+
+# A shell exists before its ACP session does; prompts are rejected until
+# the session id lands.
+wait_session_ready() {
+  local session=$1 timeout=${2:-180} deadline line sid
+  deadline=$(( $(date +%s) + timeout ))
+  while :; do
+    line=$(ash status "$session")
+    sid=$(printf '%s' "$line" | cut -f6)
+    if [ -n "$sid" ] && [ "$sid" != "-" ]; then return 0; fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      die "session $session did not initialize within ${timeout}s"
+    fi
+    sleep 1
+  done
+}
+
+# Block until SESSION's turn counter passes SINCE.
+# Exit 0 done, 2 awaiting a permission decision, 3 timed out.
+wait_turn() {
+  local session=$1 since=$2 timeout=$3 deadline line turns state
+  deadline=$(( $(date +%s) + timeout ))
+  while :; do
+    line=$(ash status "$session")
+    turns=$(printf '%s' "$line" | cut -f4)
+    state=$(printf '%s' "$line" | cut -f2)
+    if [ "$turns" -gt "$since" ]; then printf '%s\n' "$line"; return 0; fi
+    if [ "$state" = "blocked" ]; then printf '%s\n' "$line"; return 2; fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then printf '%s\n' "$line"; return 3; fi
+    sleep 3
+  done
+}
+
+usage() {
+  sed -n '/^## USAGE/,/^## END/p' "${BASH_SOURCE[0]}" | sed '1d;$d;s/^# \{0,1\}//'
+}
+
+## USAGE
+# agent-shell-ctl <command> [options]
+#
+#   agents                          List agent types (claude-code, codex, ...).
+#   list                            Sessions as: NAME STATUS AGENT TURNS DIR SESSION-ID.
+#   status   --session S            One session's line.
+#   output   --session S [--last|--tail N|--all]
+#   send     --session S (--prompt T|--prompt-file F) [--steer] [--wait] [--timeout N]
+#   wait     --session S [--since N] [--timeout N]
+#   kill     --session S
+#
+#   new      --agent A [--dir D] [--mode M] [--model M] [--display]
+#   spawn    --agent A (--prompt T|--prompt-file F)
+#            [--dir D | --repo R --name N --branch B --base REF]
+#            [--mode M] [--model M] [--display] [--wait] [--timeout N]
+#
+#   worktree-new    [--repo R] [--name N] [--branch B] [--base REF]
+#   worktree-list   [--repo R]
+#   worktree-remove --worktree W [--force] [--delete-branch]
+#
+# Session names match on an exact buffer name or a unique substring.
+# Statuses: ready (idle), busy (working), blocked (a permission prompt is
+# waiting for a human in Emacs).
+# Exit codes for --wait / wait: 0 turn finished, 2 blocked, 3 timed out.
+## END
+
+cmd=${1:-}
+if [ $# -gt 0 ]; then shift; fi
+
+agent='' dir='' repo='' mode='' model='' session='' prompt='' prompt_file=''
+worktree='' name='' branch='' base='' since='' line='' state=''
+display=nil steer=nil do_wait=0 timeout=600 out_mode=last tail_lines=50 force=0 del_branch=0
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --agent) agent=$2; shift 2;;
+    --dir) dir=$2; shift 2;;
+    --repo) repo=$2; shift 2;;
+    --mode) mode=$2; shift 2;;
+    --model) model=$2; shift 2;;
+    --session) session=$2; shift 2;;
+    --prompt) prompt=$2; shift 2;;
+    --prompt-file) prompt_file=$2; shift 2;;
+    --worktree) worktree=$2; shift 2;;
+    --name|--worktree-name) name=$2; shift 2;;
+    --branch) branch=$2; shift 2;;
+    --base) base=$2; shift 2;;
+    --since) since=$2; shift 2;;
+    --timeout) timeout=$2; shift 2;;
+    --tail) out_mode='tail'; tail_lines=$2; shift 2;;
+    --last) out_mode=last; shift;;
+    --all) out_mode=all; shift;;
+    --display) display=t; shift;;
+    --steer) steer=t; shift;;
+    --wait) do_wait=1; shift;;
+    --force) force=1; shift;;
+    --delete-branch) del_branch=1; shift;;
+    -h|--help) usage; exit 0;;
+    *) die "unknown option: $1";;
+  esac
+done
+
+# Create <repo>/.agent-shell/worktrees/<name>, echoing the path.
+make_worktree() {
+  local root wt_dir add=()
+  root=$(repo_root "${repo:-.}")
+  wt_dir=$(ash worktrees-dir "$root")
+  if [ -z "$name" ]; then name=$(ash worktree-name); fi
+  dir="$wt_dir/$name"
+  if [ -e "$dir" ]; then die "directory already exists: $dir"; fi
+  add=(git -C "$root" worktree add)
+  if [ -n "$branch" ]; then add+=(-b "$branch"); fi
+  add+=("$dir")
+  if [ -n "$base" ]; then add+=("$base"); fi
+  "${add[@]}" >&2 || die "git worktree add failed"
+}
+
+start_session() {
+  local started
+  started=$(ash_raw "$(elstr new)" "$(elstr "$agent")" "$(elstr "${dir:-$PWD}")" \
+                    "$(elstr "$mode")" "$(elstr "$model")" "$display")
+  [ -n "$started" ] || die "failed to start session"
+  wait_session_ready "$started"
+  printf '%s' "$started"
+}
+
+send_prompt() {
+  local target=$1 pf result
+  pf=$(prompt_file_from "$prompt" "$prompt_file")
+  result=$(ash_raw "$(elstr send)" "$(elstr "$target")" "$(elstr "$pf")" "$steer")
+  if [ -z "$prompt_file" ]; then rm -f "$pf"; fi
+  printf '%s\n' "$result"
+  if [ "$do_wait" = 1 ]; then
+    wait_turn "$target" "$(printf '%s' "$result" | cut -f2)" "$timeout"
+  fi
+}
+
+case $cmd in
+  agents|list) ash "$cmd";;
+
+  status)
+    [ -n "$session" ] || die "missing --session"
+    ash status "$session";;
+
+  output)
+    [ -n "$session" ] || die "missing --session"
+    ash output "$session" "$out_mode" "$tail_lines";;
+
+  kill)
+    [ -n "$session" ] || die "missing --session"
+    ash kill "$session";;
+
+  wait)
+    [ -n "$session" ] || die "missing --session"
+    if [ -z "$since" ]; then
+      # No baseline given: wait out whatever is in flight. An idle session
+      # has nothing to wait for. (Subtracting 1 from the turn count here
+      # would make wait_turn's `turns > since' true on the spot.)
+      line=$(ash status "$session")
+      state=$(printf '%s' "$line" | cut -f2)
+      if [ "$state" = "ready" ]; then printf '%s\n' "$line"; exit 0; fi
+      since=$(printf '%s' "$line" | cut -f4)
+    fi
+    wait_turn "$session" "$since" "$timeout";;
+
+  new)
+    [ -n "$agent" ] || die "missing --agent"
+    start_session; echo;;
+
+  send)
+    [ -n "$session" ] || die "missing --session"
+    send_prompt "$session";;
+
+  spawn)
+    [ -n "$agent" ] || die "missing --agent"
+    [ -n "$prompt" ] || [ -n "$prompt_file" ] || die "missing --prompt or --prompt-file"
+    if [ -z "$dir" ]; then make_worktree; fi
+    session=$(start_session)
+    printf 'session\t%s\nworktree\t%s\n' "$session" "$dir"
+    send_prompt "$session";;
+
+  worktree-new)
+    make_worktree
+    printf '%s\n' "$dir";;
+
+  worktree-list)
+    git -C "$(repo_root "${repo:-.}")" worktree list;;
+
+  worktree-remove)
+    [ -n "$worktree" ] || die "missing --worktree"
+    worktree=$(cd "$worktree" 2>/dev/null && pwd) || die "no such worktree: $worktree"
+    # `rev-parse --show-toplevel` inside a linked worktree returns that
+    # worktree; the main one is always the first `worktree list` entry.
+    root=$(git -C "$worktree" worktree list --porcelain | head -1 | cut -d' ' -f2-)
+    [ -n "$root" ] || die "not a git worktree: $worktree"
+    if [ "$root" = "$worktree" ]; then die "refusing to remove the main worktree: $worktree"; fi
+    # Refuse before killing anything: letting `git worktree remove' fail
+    # after the kill would destroy live sessions for a removal that is
+    # then rejected anyway.
+    if [ "$force" != 1 ] && [ -n "$(git -C "$worktree" status --porcelain)" ]; then
+      die "worktree has uncommitted or untracked changes: $worktree (use --force to discard them)"
+    fi
+    wt_branch=$(git -C "$worktree" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    killed=$(ash kill-under "$worktree")
+    if [ -n "$killed" ]; then printf 'killed sessions:\n%s\n' "$killed"; fi
+    remove=(git -C "$root" worktree remove)
+    if [ "$force" = 1 ]; then remove+=(--force); fi
+    remove+=("$worktree")
+    "${remove[@]}" || die "git worktree remove failed (use --force to discard changes)"
+    printf 'removed\t%s\n' "$worktree"
+    if [ "$del_branch" = 1 ] && [ -n "$wt_branch" ] && [ "$wt_branch" != HEAD ]; then
+      if git -C "$root" branch -D "$wt_branch" >&2; then
+        printf 'deleted branch\t%s\n' "$wt_branch"
+      fi
+    fi;;
+
+  ""|-h|--help|help) usage;;
+  *) die "unknown command: $cmd (try --help)";;
+esac

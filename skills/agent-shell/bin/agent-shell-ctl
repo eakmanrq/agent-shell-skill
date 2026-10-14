@@ -76,14 +76,18 @@ prompt_file_from() {
 }
 
 # A shell exists before its ACP session does; prompts are rejected until
-# the session id lands.
+# initialization finishes. Once it has, `check' fails if a requested
+# --model, --mode or --effort did not take, and the session is killed
+# rather than left running on the agent's default.
 wait_session_ready() {
-  local session=$1 timeout=${2:-180} deadline line sid
+  local session=$1 timeout=${2:-180} deadline state
   deadline=$(( $(date +%s) + timeout ))
   while :; do
-    line=$(ash status "$session")
-    sid=$(printf '%s' "$line" | cut -f6)
-    if [ -n "$sid" ] && [ "$sid" != "-" ]; then return 0; fi
+    if ! state=$(ash check "$session"); then
+      ash kill "$session" >/dev/null
+      die "killed session $session"
+    fi
+    if [ "$state" = ready ]; then return 0; fi
     if [ "$(date +%s)" -ge "$deadline" ]; then
       die "session $session did not initialize within ${timeout}s"
     fi
@@ -117,15 +121,16 @@ usage() {
 #   agents                          List agent types (claude-code, codex, ...).
 #   list                            Sessions as: NAME STATUS AGENT TURNS DIR SESSION-ID.
 #   status   --session S            One session's line.
+#   config   --session S            Its config as: MODEL MODE THOUGHT-LEVEL.
 #   output   --session S [--last|--tail N|--all]
 #   send     --session S (--prompt T|--prompt-file F) [--steer] [--wait] [--timeout N]
 #   wait     --session S [--since N] [--timeout N]
 #   kill     --session S
 #
-#   new      --agent A [--dir D] [--mode M] [--model M] [--display]
+#   new      --agent A [--dir D] [--mode M] [--model M] [--effort E] [--display]
 #   spawn    --agent A (--prompt T|--prompt-file F)
 #            [--dir D | --repo R --name N --branch B --base REF]
-#            [--mode M] [--model M] [--display] [--wait] [--timeout N]
+#            [--mode M] [--model M] [--effort E] [--display] [--wait] [--timeout N]
 #
 #   worktree-new    [--repo R] [--name N] [--branch B] [--base REF]
 #   worktree-list   [--repo R]
@@ -136,13 +141,15 @@ usage() {
 # completed turn, as markdown; --tail/--all are rendered buffer text.
 # Statuses: ready (idle), busy (working), blocked (a permission prompt is
 # waiting for a human in Emacs).
+# new / spawn fail, killing the session, if the agent did not apply a
+# requested --mode, --model or --effort.
 # Exit codes for --wait / wait: 0 turn finished, 2 blocked, 3 timed out.
 ## END
 
 cmd=${1:-}
 if [ $# -gt 0 ]; then shift; fi
 
-agent='' dir='' repo='' mode='' model='' session='' prompt='' prompt_file=''
+agent='' dir='' repo='' mode='' model='' effort='' session='' prompt='' prompt_file=''
 worktree='' name='' branch='' base='' since='' line='' state=''
 display=nil steer=nil do_wait=0 timeout=600 out_mode=last tail_lines=50 force=0 del_branch=0
 
@@ -153,6 +160,7 @@ while [ $# -gt 0 ]; do
     --repo) repo=$2; shift 2;;
     --mode) mode=$2; shift 2;;
     --model) model=$2; shift 2;;
+    --effort) effort=$2; shift 2;;
     --session) session=$2; shift 2;;
     --prompt) prompt=$2; shift 2;;
     --prompt-file) prompt_file=$2; shift 2;;
@@ -193,7 +201,8 @@ make_worktree() {
 start_session() {
   local started
   started=$(ash_raw "$(elstr new)" "$(elstr "$agent")" "$(elstr "${dir:-$PWD}")" \
-                    "$(elstr "$mode")" "$(elstr "$model")" "$display")
+                    "$(elstr "$mode")" "$(elstr "$model")" "$(elstr "$effort")" \
+                    "$display")
   [ -n "$started" ] || die "failed to start session"
   wait_session_ready "$started"
   printf '%s' "$started"
@@ -216,6 +225,10 @@ case $cmd in
   status)
     [ -n "$session" ] || die "missing --session"
     ash status "$session";;
+
+  config)
+    [ -n "$session" ] || die "missing --session"
+    ash config "$session";;
 
   output)
     [ -n "$session" ] || die "missing --session"

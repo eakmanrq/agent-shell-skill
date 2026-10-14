@@ -52,6 +52,11 @@ $CTL list
 $CTL spawn --agent claude-code --repo ~/code/myproject \
   --prompt 'Add a --json flag to the CLI' --mode acceptEdits --wait
 
+$CTL spawn --agent codex --repo ~/code/myproject \
+  --prompt 'Fix the flaky test' --model gpt-6-luna --effort low \
+  --mode agent-full-access --wait
+
+$CTL config --session <name>
 $CTL output --session <name>
 $CTL send   --session <name> --prompt 'Also add tests.' --wait
 $CTL kill   --session <name>

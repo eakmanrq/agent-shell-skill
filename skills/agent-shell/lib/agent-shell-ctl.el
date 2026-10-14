@@ -129,11 +129,12 @@ case-insensitive substring match, which must be unique."
   "Return a fresh agent-shell style worktree name."
   (agent-shell-worktree--generate-name))
 
-(defun agent-shell-ctl-new (agent dir mode model display)
+(defun agent-shell-ctl-new (agent dir mode model effort display)
   "Start a shell for AGENT in DIR and return its buffer name.
 
-MODE and MODEL, when non-empty, are applied as ACP session config
-options during initialization.  DISPLAY non-nil shows the buffer."
+MODE, MODEL and EFFORT, when non-empty, are applied as ACP session
+config options during initialization, EFFORT as the thought level.
+DISPLAY non-nil shows the buffer."
   (let* ((identifier (intern agent))
          (config (or (agent-shell--resolve-config-designator identifier)
                      (user-error "Unknown agent %S.  Known: %s" agent
@@ -143,9 +144,13 @@ options during initialization.  DISPLAY non-nil shows the buffer."
                                           (agent-shell--resolved-agent-configs))
                                   ", "))))
          (dir (file-name-as-directory (expand-file-name dir)))
+         ;; The thought level goes last: agents scope its values to the
+         ;; active model.
          (options (seq-keep #'identity
                             (list (unless (string-empty-p mode) (cons "mode" mode))
-                                  (unless (string-empty-p model) (cons "model" model))))))
+                                  (unless (string-empty-p model) (cons "model" model))
+                                  (unless (string-empty-p effort)
+                                    (cons "thought_level" effort))))))
     (unless (file-directory-p dir)
       (user-error "No such directory: %s" dir))
     (when options

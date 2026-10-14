@@ -94,9 +94,12 @@ Options worth knowing:
 - `--dir DIR` — run in an **existing** directory (an existing worktree, or the
   repo itself) instead of creating a new worktree.
 - `--mode MODE` — ACP permission mode. For `claude-code`: `default`, `plan`,
-  `acceptEdits`, `auto`, `dontAsk`, `bypassPermissions`. Without a permissive
-  mode an unattended agent will stall at the first permission prompt.
+  `acceptEdits`, `auto`, `dontAsk`, `bypassPermissions`; for `codex`:
+  `read-only`, `workspace-write`, `agent`, `agent-full-access`. Without a
+  permissive mode an unattended agent will stall at the first permission prompt.
 - `--model MODEL` — agent-specific model id.
+- `--effort LEVEL` — reasoning effort (the ACP `thought_level` option), e.g.
+  `low`, `medium`, `high`. The levels on offer depend on the agent and model.
 - `--display` — also show the buffer in Emacs. Off by default so spawning does
   not steal the user's window.
 - `--wait` — block until the turn finishes. Omit it to fire and forget, then

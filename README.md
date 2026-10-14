@@ -5,9 +5,10 @@ drive [agent-shell](https://github.com/xenodium/agent-shell) sessions inside a
 running Emacs, over `emacsclient`.
 
 It can create a git worktree and start a claude/codex/gemini session in it, hand
-that session a task, wait for the turn to finish, read the output, send follow-up
-messages, kill sessions, and remove worktrees — all while the session stays a
-normal agent-shell buffer the user can watch and take over.
+that session a task, wait for the turn to finish, read the agent's reply as
+markdown, send follow-up messages, kill sessions, and remove worktrees — all
+while the session stays a normal agent-shell buffer the user can watch and take
+over.
 
 ## Requirements
 

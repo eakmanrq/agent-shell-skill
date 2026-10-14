@@ -130,13 +130,23 @@ S=$("$CTL" new --agent codex --dir "$WT")
 ## Reading output
 
 ```bash
-"$CTL" output --session bold-turing            # last agent response (default)
+"$CTL" output --session bold-turing            # agent's last message (default)
 "$CTL" output --session bold-turing --tail 80  # last 80 transcript lines
 "$CTL" output --session bold-turing --all      # whole transcript
 ```
 
-`--last` returns the rendered response text. `--tail`/`--all` include the shell's
-own prompts and markers like `<shell-maker-end-of-prompt>`; ignore those.
+`--last` returns the agent's final message of the most recent completed turn,
+exactly as the agent wrote it (markdown, not the rendered buffer). Text the agent
+wrote before its last tool call is dropped, so this is the answer rather than its
+"let me check…" preamble. While a turn is running, it is still the previous
+turn's message.
+
+A session the wrapper has not seen finish a turn yet (one started by hand in
+Emacs, until its next turn ends) has no captured message; `--last` then falls
+back to the rendered text of the latest response.
+
+`--tail`/`--all` return rendered buffer text, including the shell's own prompts
+and markers like `<shell-maker-end-of-prompt>`; ignore those.
 
 ## Waiting
 

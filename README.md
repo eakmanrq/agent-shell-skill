@@ -62,9 +62,9 @@ $CTL send   --session <name> --prompt 'Also add tests.' --wait
 $CTL kill   --session <name>
 $CTL worktree-remove --worktree <path> --delete-branch
 
-# Pin a session by its ACP id (last field of `list`/`status`), so a new
-# session that reuses the buffer name is never the one reached:
-$CTL send   --session <exact name> --session-id <id> --prompt 'Continue.'
+# Address a session by its ACP id (last field of `list`/`status`), so a
+# new session that reuses the buffer name is never the one reached:
+$CTL send   --session-id <id> --prompt 'Continue.'
 ```
 
 ## Layout

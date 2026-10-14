@@ -66,25 +66,30 @@ Claude Agent @ bold-turing  ready  claude-code  2  /path/to/worktree      da9a94
 
 Buffer names are reused: kill a session and start another in the same
 directory, and the new one gets the old name. A script that holds on to a
-session across calls should record its SESSION-ID once and pass it back with
-`--session-id` on `status`, `config`, `output`, `send`, `wait` and `kill`:
+session across calls should record its SESSION-ID once and pass it as
+`--session-id` on `status`, `config`, `output`, `send`, `wait` and `kill`,
+in place of `--session`:
 
 ```bash
-"$CTL" send --session 'Claude Agent @ repo' \
-  --session-id da9a9451-... --prompt 'Also update the README.'
+"$CTL" send --session-id da9a9451-... --prompt 'Also update the README.'
 ```
 
-With `--session-id`, `--session` must be the exact buffer name (no substring
-match), and the session must have that ACP id. Both are checked in the same
-Emacs call that sends, reads or kills, so a different session that took over
-the name can never be reached. Otherwise the command exits `1` with:
+The id is checked in the same Emacs call that sends, reads or kills, so a
+different session that took over the name can never be reached, and a session
+the user renamed is still found. When no session has that id, the command exits
+`1` with:
 
 ```
-No agent session Claude Agent @ repo with ACP session id da9a9451-...
+No agent session with ACP session id da9a9451-...
 ```
 
 Treat that as the session being gone. A session whose id is still `-` never
 matches.
+
+A conversation resumed in Emacs can be open in two buffers with the same id.
+`--session-id` alone then fails as ambiguous; add `--session` with the exact
+buffer name (no substring match) to pick one. With both, the error reads
+`No agent session NAME with ACP session id ID`.
 
 `config` prints a session's model, mode and effort, tab-separated, with `-` for
 any the agent does not have:

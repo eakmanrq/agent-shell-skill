@@ -127,13 +127,12 @@ usage() {
 #
 #   agents                          List agent types (claude-code, codex, ...).
 #   list                            Sessions as: NAME STATUS AGENT TURNS DIR SESSION-ID.
-#   status   --session S [--session-id ID]   One session's line.
-#   config   --session S [--session-id ID]   Its config as: MODEL MODE THOUGHT-LEVEL.
-#   output   --session S [--session-id ID] [--last|--tail N|--all]
-#   send     --session S [--session-id ID] (--prompt T|--prompt-file F)
-#            [--steer] [--wait] [--timeout N]
-#   wait     --session S [--session-id ID] [--since N] [--timeout N]
-#   kill     --session S [--session-id ID]
+#   status   SESSION                One session's line.
+#   config   SESSION                Its config as: MODEL MODE THOUGHT-LEVEL.
+#   output   SESSION [--last|--tail N|--all]
+#   send     SESSION (--prompt T|--prompt-file F) [--steer] [--wait] [--timeout N]
+#   wait     SESSION [--since N] [--timeout N]
+#   kill     SESSION
 #
 #   new      --agent A [--dir D] [--mode M] [--model M] [--effort E] [--display]
 #   spawn    --agent A (--prompt T|--prompt-file F)
@@ -144,10 +143,12 @@ usage() {
 #   worktree-list   [--repo R]
 #   worktree-remove --worktree W [--force] [--delete-branch]
 #
-# Session names match on an exact buffer name or a unique substring.
-# --session-id ID instead requires the exact name and that session's ACP
-# id (SESSION-ID in list), checked in the same Emacs call as the command;
-# otherwise it fails with "No agent session S with ACP session id ID".
+# SESSION is --session S, --session-id ID, or both.
+# --session S matches an exact buffer name or a unique substring.
+# --session-id ID matches the session with that ACP id (SESSION-ID in
+# list), checked in the same Emacs call as the command; with --session S
+# too, S must be its exact name. No match fails with "No agent session
+# [S ]with ACP session id ID".
 # output --last (the default) is the agent's final message of the last
 # completed turn, as markdown; --tail/--all are rendered buffer text.
 # Statuses: ready (idle), busy (working), blocked (a permission prompt is
@@ -243,23 +244,23 @@ case $cmd in
   agents|list) ash "$cmd";;
 
   status)
-    [ -n "$session" ] || die "missing --session"
+    [ -n "$session$session_id" ] || die "missing --session"
     ash_session status "$session";;
 
   config)
-    [ -n "$session" ] || die "missing --session"
+    [ -n "$session$session_id" ] || die "missing --session"
     ash_session config "$session";;
 
   output)
-    [ -n "$session" ] || die "missing --session"
+    [ -n "$session$session_id" ] || die "missing --session"
     ash_session output "$session" "$out_mode" "$tail_lines";;
 
   kill)
-    [ -n "$session" ] || die "missing --session"
+    [ -n "$session$session_id" ] || die "missing --session"
     ash_session kill "$session";;
 
   wait)
-    [ -n "$session" ] || die "missing --session"
+    [ -n "$session$session_id" ] || die "missing --session"
     if [ -z "$since" ]; then
       # No baseline given: wait out whatever is in flight. An idle session
       # has nothing to wait for. (Subtracting 1 from the turn count here
@@ -276,7 +277,7 @@ case $cmd in
     start_session; echo;;
 
   send)
-    [ -n "$session" ] || die "missing --session"
+    [ -n "$session$session_id" ] || die "missing --session"
     send_prompt "$session";;
 
   spawn)

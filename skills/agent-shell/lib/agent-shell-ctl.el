@@ -62,19 +62,29 @@ REQUESTED and switched to its own VALUE.")
 Matches an exact buffer name first, then falls back to a
 case-insensitive substring match, which must be unique.
 
-With SESSION-ID, only the buffer named exactly NAME whose ACP
-session id is SESSION-ID matches.  Buffer names are reused, so this
-is what keeps a caller that pinned a session's id from reaching a
-different session started under the same name."
+With SESSION-ID, only a buffer whose ACP session id is SESSION-ID
+matches, and when NAME is non-empty it must also be named exactly
+NAME.  Buffer names are reused, so this is what keeps a caller that
+pinned a session's id from reaching a different session started under
+the same name.  A resumed session can be open in two buffers with one
+id; that is ambiguous unless NAME picks one."
   (if session-id
-      (or (and (not (member session-id '("" "-")))
-               (seq-find (lambda (buffer)
-                           (and (equal (buffer-name buffer) name)
-                                (equal (agent-shell-ctl--session-id buffer)
-                                       session-id)))
-                         (agent-shell-ctl--sessions)))
-          (user-error "No agent session %s with ACP session id %s"
-                      name session-id))
+      (let ((matches (and (not (member session-id '("" "-")))
+                          (seq-filter
+                           (lambda (buffer)
+                             (and (or (string-empty-p name)
+                                      (equal (buffer-name buffer) name))
+                                  (equal (agent-shell-ctl--session-id buffer)
+                                         session-id)))
+                           (agent-shell-ctl--sessions)))))
+        (pcase (length matches)
+          (1 (car matches))
+          (0 (if (string-empty-p name)
+                 (user-error "No agent session with ACP session id %s" session-id)
+               (user-error "No agent session %s with ACP session id %s"
+                           name session-id)))
+          (_ (user-error "Ambiguous ACP session id %s, matches: %s" session-id
+                         (string-join (mapcar #'buffer-name matches) ", ")))))
     (or (seq-find (lambda (buffer) (equal (buffer-name buffer) name))
                   (agent-shell-ctl--sessions))
         (let ((matches (seq-filter

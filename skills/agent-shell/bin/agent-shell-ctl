@@ -132,6 +132,8 @@ usage() {
 #   worktree-remove --worktree W [--force] [--delete-branch]
 #
 # Session names match on an exact buffer name or a unique substring.
+# output --last (the default) is the agent's final message of the last
+# completed turn, as markdown; --tail/--all are rendered buffer text.
 # Statuses: ready (idle), busy (working), blocked (a permission prompt is
 # waiting for a human in Emacs).
 # Exit codes for --wait / wait: 0 turn finished, 2 blocked, 3 timed out.

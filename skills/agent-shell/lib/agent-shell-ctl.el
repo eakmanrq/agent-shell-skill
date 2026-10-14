@@ -21,8 +21,17 @@
 (defvar-local agent-shell-ctl--turns nil
   "Count of completed turns observed in this shell buffer.")
 
+(defvar-local agent-shell-ctl--message nil
+  "Chunks of the agent message streaming in this turn, newest first.")
+
+(defvar-local agent-shell-ctl--message-stale nil
+  "Non-nil when a tool call ran after `agent-shell-ctl--message' streamed.")
+
+(defvar-local agent-shell-ctl--last-message nil
+  "Final agent message of the last completed turn, or nil if none observed.")
+
 (defvar-local agent-shell-ctl--tracking nil
-  "Non-nil once a `turn-complete' subscription is installed here.")
+  "Non-nil once the event subscription is installed here.")
 
 
 ;;; Resolution
@@ -81,21 +90,44 @@ case-insensitive substring match, which must be unique."
 ;; actually sent, so polling it right after a send can observe a stale
 ;; `ready'.  Count `turn-complete' events instead: the wrapper reads the
 ;; counter before sending and waits for it to advance.
+;;
+;; The same subscription keeps the agent's last message as it streamed
+;; it, before rendering.  `agent-message-chunk' carries no message id, so
+;; a tool call is the boundary: text streamed before one is preamble, and
+;; the next chunk after it starts the message again.
 
 (defun agent-shell-ctl--ensure-tracking (buffer)
-  "Install the `turn-complete' counter in BUFFER, once."
+  "Install the turn counter and message capture in BUFFER, once."
   (with-current-buffer buffer
     (unless agent-shell-ctl--tracking
       (setq-local agent-shell-ctl--tracking t)
       (setq-local agent-shell-ctl--turns 0)
       (agent-shell-subscribe-to
        :shell-buffer buffer
-       :event 'turn-complete
-       :on-event (lambda (_event)
+       :on-event (lambda (event)
                    (when (buffer-live-p buffer)
                      (with-current-buffer buffer
-                       (setq-local agent-shell-ctl--turns
-                                   (1+ (or agent-shell-ctl--turns 0))))))))))
+                       (agent-shell-ctl--track event))))))))
+
+(defun agent-shell-ctl--track (event)
+  "Update the current buffer's turn count and messages from EVENT."
+  (pcase (map-elt event :event)
+    ('input-submitted
+     (setq-local agent-shell-ctl--message nil)
+     (setq-local agent-shell-ctl--message-stale nil))
+    ('tool-call-update
+     (setq-local agent-shell-ctl--message-stale t))
+    ('agent-message-chunk
+     (when-let* ((chunk (map-nested-elt event '(:data :text-chunk))))
+       (when agent-shell-ctl--message-stale
+         (setq-local agent-shell-ctl--message nil)
+         (setq-local agent-shell-ctl--message-stale nil))
+       (push chunk agent-shell-ctl--message)))
+    ('turn-complete
+     (setq-local agent-shell-ctl--last-message
+                 (apply #'concat (reverse agent-shell-ctl--message)))
+     (setq-local agent-shell-ctl--turns
+                 (1+ (or agent-shell-ctl--turns 0))))))
 
 (defun agent-shell-ctl--turns (buffer)
   "Return the completed turn count observed in BUFFER."
@@ -199,10 +231,13 @@ turn instead of queueing it."
 (defun agent-shell-ctl-output (name mode lines)
   "Return output from session NAME.
 
-MODE is \"last\" for the most recent agent response, \"tail\" for the
-last LINES lines, or \"all\" for the whole transcript."
+MODE is \"last\" for the agent's final message of the last completed
+turn, \"tail\" for the last LINES lines, or \"all\" for the whole
+transcript.  \"last\" falls back to the rendered latest response until
+a turn completes under `agent-shell-ctl--ensure-tracking'."
   (let ((buffer (agent-shell-ctl--find name))
         (lines (if (stringp lines) (string-to-number lines) lines)))
+    (agent-shell-ctl--ensure-tracking buffer)
     (with-current-buffer buffer
       (pcase mode
         ("all" (buffer-substring-no-properties (point-min) (point-max)))
@@ -211,6 +246,7 @@ last LINES lines, or \"all\" for the whole transcript."
            (goto-char (point-max))
            (forward-line (- (max 1 lines)))
            (buffer-substring-no-properties (point) (point-max))))
+        ((guard agent-shell-ctl--last-message) agent-shell-ctl--last-message)
         (_
          (if-let* ((process (get-buffer-process buffer)))
              (save-mark-and-excursion

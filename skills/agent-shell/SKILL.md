@@ -68,8 +68,11 @@ any the agent does not have:
 
 ```
 MODEL             MODE               THOUGHT-LEVEL
-haiku             bypassPermissions  low
+claude-haiku-5-5  bypassPermissions  low
 ```
+
+A full `claude-code` model id reads back as given while the agent stays on the
+alias it mapped that id to; a model picked by alias reads back as the alias.
 
 ## Spawning work in a new worktree
 
@@ -105,13 +108,26 @@ Options worth knowing:
   `acceptEdits`, `auto`, `dontAsk`, `bypassPermissions`; for `codex`:
   `read-only`, `workspace-write`, `agent`, `agent-full-access`. Without a
   permissive mode an unattended agent will stall at the first permission prompt.
-- `--model MODEL` — agent-specific model id.
+- `--model MODEL` — agent-specific model id. `claude-code` lists aliases
+  (`opus`, `sonnet`, `haiku`, ...) but also takes a full id such as
+  `claude-opus-5-5`, which it maps onto the matching alias.
 - `--effort LEVEL` — reasoning effort (the ACP `thought_level` option), e.g.
   `low`, `medium`, `high`. The levels on offer depend on the agent and model.
 - `--display` — also show the buffer in Emacs. Off by default so spawning does
   not steal the user's window.
 - `--wait` — block until the turn finishes. Omit it to fire and forget, then
   poll with `status` or block later with `wait`.
+
+`new` and `spawn` check that the agent applied every `--mode`, `--model` and
+`--effort` given. If one did not take (a typo, a level the model does not
+offer), they kill the session and exit `1` with a message naming each value
+that differed and what the agent offers instead — rather than letting the
+agent run on its default:
+
+```
+Agent did not apply --effort bogus (has default; offers default, low, medium, high, xhigh, max)
+agent-shell-ctl: killed session Claude Agent @ repo
+```
 
 Prefer `--prompt-file` for anything longer than a sentence; `--prompt` is fine
 for short text.

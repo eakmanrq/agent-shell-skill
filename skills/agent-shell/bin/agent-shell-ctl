@@ -76,14 +76,18 @@ prompt_file_from() {
 }
 
 # A shell exists before its ACP session does; prompts are rejected until
-# the session id lands.
+# initialization finishes. Once it has, `check' fails if a requested
+# --model, --mode or --effort did not take, and the session is killed
+# rather than left running on the agent's default.
 wait_session_ready() {
-  local session=$1 timeout=${2:-180} deadline line sid
+  local session=$1 timeout=${2:-180} deadline state
   deadline=$(( $(date +%s) + timeout ))
   while :; do
-    line=$(ash status "$session")
-    sid=$(printf '%s' "$line" | cut -f6)
-    if [ -n "$sid" ] && [ "$sid" != "-" ]; then return 0; fi
+    if ! state=$(ash check "$session"); then
+      ash kill "$session" >/dev/null
+      die "killed session $session"
+    fi
+    if [ "$state" = ready ]; then return 0; fi
     if [ "$(date +%s)" -ge "$deadline" ]; then
       die "session $session did not initialize within ${timeout}s"
     fi
@@ -135,6 +139,8 @@ usage() {
 # Session names match on an exact buffer name or a unique substring.
 # Statuses: ready (idle), busy (working), blocked (a permission prompt is
 # waiting for a human in Emacs).
+# new / spawn fail, killing the session, if the agent did not apply a
+# requested --mode, --model or --effort.
 # Exit codes for --wait / wait: 0 turn finished, 2 blocked, 3 timed out.
 ## END
 

@@ -24,6 +24,16 @@
 (defvar-local agent-shell-ctl--tracking nil
   "Non-nil once a `turn-complete' subscription is installed here.")
 
+(defvar-local agent-shell-ctl--requested nil
+  "Alist of (OPTION . VALUE) config options `new' was asked for.")
+
+(defvar-local agent-shell-ctl--model-resolution nil
+  "Outcome of sending an unlisted model id straight to the agent.
+
+nil when not tried, `pending' while in flight, `failed' when the
+agent refused it, or (REQUESTED . VALUE) once the agent accepted
+REQUESTED and switched to its own VALUE.")
+
 (defconst agent-shell-ctl--options
   '(("model" . agent-shell--current-model-id)
     ("mode" . agent-shell--current-mode-id)
@@ -110,11 +120,72 @@ case-insensitive substring match, which must be unique."
 
 
 ;;; Config
+;;
+;; agent-shell applies startup config options best effort: a value the
+;; agent does not list is skipped with a warning in the buffer, and the
+;; session runs on the agent's default.  `check' turns that into a hard
+;; failure, so a mistyped --model or --effort never goes unnoticed.
+;;
+;; Agents may accept model ids they do not list, though: claude-code
+;; lists aliases (opus, haiku, ...) and resolves full ids such as
+;; claude-opus-5-5 onto them.  So an unlisted model is sent to the agent
+;; once more, straight through the public setter, and the agent decides.
 
 (defun agent-shell-ctl--value (option)
-  "Return the current value of config OPTION in this shell, or nil."
-  (funcall (alist-get option agent-shell-ctl--options nil nil #'equal)
-           agent-shell--state))
+  "Return the current value of config OPTION in this shell, or nil.
+
+A model id the agent resolved onto one of its own values reads back
+as the id requested, for as long as the agent stays on that value."
+  (let ((value (funcall (alist-get option agent-shell-ctl--options nil nil #'equal)
+                        agent-shell--state)))
+    (if (and value
+             (equal option "model")
+             (consp agent-shell-ctl--model-resolution)
+             (equal value (cdr agent-shell-ctl--model-resolution)))
+        (car agent-shell-ctl--model-resolution)
+      value)))
+
+(defun agent-shell-ctl--mismatch (option value)
+  "Describe how config OPTION differs from the requested VALUE, or nil."
+  (let ((current (agent-shell-ctl--value option))
+        (offered (agent-shell--default-config-option-values agent-shell--state option)))
+    (unless (equal value current)
+      (format "--%s %s (has %s; offers %s)"
+              (if (equal option "thought_level") "effort" option)
+              value (or current "none")
+              (if offered (string-join offered ", ") "nothing")))))
+
+(defun agent-shell-ctl--resolve-model (buffer model effort)
+  "Ask BUFFER's agent to switch to MODEL, an id it does not list.
+
+On success EFFORT, when non-nil, is set again, since agents scope
+thought levels to the model.  The outcome lands in
+`agent-shell-ctl--model-resolution'."
+  (let ((finish (lambda (outcome)
+                  (when (buffer-live-p buffer)
+                    (with-current-buffer buffer
+                      (setq-local agent-shell-ctl--model-resolution outcome))))))
+    (funcall finish 'pending)
+    (agent-shell-set-config-option-value
+     :shell-buffer buffer
+     :category "model"
+     :value model
+     :on-success
+     (lambda (result)
+       (let ((outcome (cons model (map-nested-elt result '(:config-option :current-value)))))
+         (if (not effort)
+             (funcall finish outcome)
+           (condition-case nil
+               (agent-shell-set-config-option-value
+                :shell-buffer buffer
+                :category "thought_level"
+                :value effort
+                :on-success (lambda (_result) (funcall finish outcome))
+                :on-failure (lambda (_result) (funcall finish outcome)))
+             ;; No thought level for the new model; `check' reports it.
+             (error (funcall finish outcome))))))
+     :on-failure (lambda (_result) (funcall finish 'failed)))))
+
 
 ;;; Commands
 
@@ -147,7 +218,8 @@ case-insensitive substring match, which must be unique."
 
 MODE, MODEL and EFFORT, when non-empty, are applied as ACP session
 config options during initialization, EFFORT as the thought level.
-DISPLAY non-nil shows the buffer."
+`agent-shell-ctl-check' later verifies they took.  DISPLAY non-nil
+shows the buffer."
   (let* ((identifier (intern agent))
          (config (or (agent-shell--resolve-config-designator identifier)
                      (user-error "Unknown agent %S.  Known: %s" agent
@@ -177,6 +249,8 @@ DISPLAY non-nil shows the buffer."
                                        :new-session t
                                        :session-strategy 'new)))
       (agent-shell-ctl--ensure-tracking buffer)
+      (with-current-buffer buffer
+        (setq-local agent-shell-ctl--requested options))
       (when display
         (agent-shell--display-buffer buffer))
       (buffer-name buffer))))
@@ -251,6 +325,34 @@ last LINES lines, or \"all\" for the whole transcript."
                          agent-shell-ctl--options)
                  "\t")))
 
+(defun agent-shell-ctl-check (name)
+  "Return \"pending\" until session NAME has initialized, then \"ready\".
+
+Signal an error naming every config option `new' requested that the
+agent did not apply, and the values it offers instead."
+  (let ((buffer (agent-shell-ctl--find name)))
+    (with-current-buffer buffer
+      (let ((model (alist-get "model" agent-shell-ctl--requested nil nil #'equal)))
+        (cond
+         ((or (not (agent-shell-initialized-p))
+              (eq agent-shell-ctl--model-resolution 'pending))
+          "pending")
+         ((and model
+               (not agent-shell-ctl--model-resolution)
+               (not (equal model (agent-shell-ctl--value "model")))
+               (agent-shell--config-option-by-category agent-shell--state "model"))
+          (agent-shell-ctl--resolve-model
+           buffer model
+           (alist-get "thought_level" agent-shell-ctl--requested nil nil #'equal))
+          "pending")
+         (t
+          (when-let* ((mismatches (seq-keep (lambda (option)
+                                              (agent-shell-ctl--mismatch
+                                               (car option) (cdr option)))
+                                            agent-shell-ctl--requested)))
+            (user-error "Agent did not apply %s" (string-join mismatches "; ")))
+          "ready"))))))
+
 (defun agent-shell-ctl-kill (name)
   "Kill session NAME, shutting down its ACP client."
   (let* ((buffer (agent-shell-ctl--find name))
@@ -291,6 +393,7 @@ OUTFILE instead of the result."
                       ("output" (apply #'agent-shell-ctl-output args))
                       ("status" (apply #'agent-shell-ctl-status args))
                       ("config" (apply #'agent-shell-ctl-config args))
+                      ("check" (apply #'agent-shell-ctl-check args))
                       ("kill" (apply #'agent-shell-ctl-kill args))
                       ("kill-under" (apply #'agent-shell-ctl-kill-under args))
                       (_ (user-error "Unknown command: %s" command)))))

@@ -117,6 +117,7 @@ usage() {
 #   agents                          List agent types (claude-code, codex, ...).
 #   list                            Sessions as: NAME STATUS AGENT TURNS DIR SESSION-ID.
 #   status   --session S            One session's line.
+#   config   --session S            Its config as: MODEL MODE THOUGHT-LEVEL.
 #   output   --session S [--last|--tail N|--all]
 #   send     --session S (--prompt T|--prompt-file F) [--steer] [--wait] [--timeout N]
 #   wait     --session S [--since N] [--timeout N]
@@ -216,6 +217,10 @@ case $cmd in
   status)
     [ -n "$session" ] || die "missing --session"
     ash status "$session";;
+
+  config)
+    [ -n "$session" ] || die "missing --session"
+    ash config "$session";;
 
   output)
     [ -n "$session" ] || die "missing --session"

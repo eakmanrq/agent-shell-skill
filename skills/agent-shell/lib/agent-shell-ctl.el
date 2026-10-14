@@ -24,6 +24,12 @@
 (defvar-local agent-shell-ctl--tracking nil
   "Non-nil once a `turn-complete' subscription is installed here.")
 
+(defconst agent-shell-ctl--options
+  '(("model" . agent-shell--current-model-id)
+    ("mode" . agent-shell--current-mode-id)
+    ("thought_level" . agent-shell--current-thought-level-id))
+  "Config option categories `config' reports, with their readers.")
+
 
 ;;; Resolution
 
@@ -102,6 +108,13 @@ case-insensitive substring match, which must be unique."
   (agent-shell-ctl--ensure-tracking buffer)
   (or (buffer-local-value 'agent-shell-ctl--turns buffer) 0))
 
+
+;;; Config
+
+(defun agent-shell-ctl--value (option)
+  "Return the current value of config OPTION in this shell, or nil."
+  (funcall (alist-get option agent-shell-ctl--options nil nil #'equal)
+           agent-shell--state))
 
 ;;; Commands
 
@@ -230,6 +243,14 @@ last LINES lines, or \"all\" for the whole transcript."
   "Return the description line for session NAME."
   (agent-shell-ctl--describe (agent-shell-ctl--find name)))
 
+(defun agent-shell-ctl-config (name)
+  "Return session NAME's model, mode and thought level, tab-separated."
+  (with-current-buffer (agent-shell-ctl--find name)
+    (string-join (mapcar (lambda (option)
+                           (or (agent-shell-ctl--value (car option)) "-"))
+                         agent-shell-ctl--options)
+                 "\t")))
+
 (defun agent-shell-ctl-kill (name)
   "Kill session NAME, shutting down its ACP client."
   (let* ((buffer (agent-shell-ctl--find name))
@@ -269,6 +290,7 @@ OUTFILE instead of the result."
                       ("send" (apply #'agent-shell-ctl-send args))
                       ("output" (apply #'agent-shell-ctl-output args))
                       ("status" (apply #'agent-shell-ctl-status args))
+                      ("config" (apply #'agent-shell-ctl-config args))
                       ("kill" (apply #'agent-shell-ctl-kill args))
                       ("kill-under" (apply #'agent-shell-ctl-kill-under args))
                       (_ (user-error "Unknown command: %s" command)))))

@@ -63,6 +63,14 @@ Claude Agent @ bold-turing  ready  claude-code  2  /path/to/worktree      da9a94
   dialog is waiting for a human in Emacs — see below).
 - **TURNS** counts completed turns, which is how `--wait` knows a reply landed.
 
+`config` prints a session's model, mode and effort, tab-separated, with `-` for
+any the agent does not have:
+
+```
+MODEL             MODE               THOUGHT-LEVEL
+haiku             bypassPermissions  low
+```
+
 ## Spawning work in a new worktree
 
 The common case — create a worktree, start an agent in it, hand it a task:
